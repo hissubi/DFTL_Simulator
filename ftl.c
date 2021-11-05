@@ -388,7 +388,6 @@ void ftl_read(u32 lba, u32 nsect, u32 *read_buffer)
             read_ppn = CMT[bank][cash_slot].data[map_page_offset];
         
             int pbn = read_ppn / PAGES_PER_BLK; int ppn = read_ppn % PAGES_PER_BLK;
-
             if(read_ppn == -1)
             {
                 for(int i = 0; i<SECTORS_PER_PAGE; i++)
@@ -426,7 +425,7 @@ void ftl_read(u32 lba, u32 nsect, u32 *read_buffer)
     free(data); free(buffer_data); free(sector_bitmap);
 }
 
-void ftl_write(u32 lba, u32 nsect, u32 *write_buffer)
+void ftl_write_direct(u32 lba, u32 nsect, u32 *write_buffer)
 {
     u32 lpn = lba/SECTORS_PER_PAGE, offset = lba%SECTORS_PER_PAGE;
     u32* data  = (u32*)malloc(sizeof(u32)*SECTORS_PER_PAGE); u32 spare;
@@ -435,6 +434,7 @@ void ftl_write(u32 lba, u32 nsect, u32 *write_buffer)
 
     while(1)
     {
+        
         u32 bank = lpn%N_BANKS;
         for(int i=0; i<SECTORS_PER_PAGE; i++)
         {
@@ -512,4 +512,105 @@ that you issue in this function
     free(data);
 	stats.host_write += nsect;
 	return;
+}
+
+
+void ftl_write(u32 lba, u32 nsect, u32 *write_buffer)
+{
+    u32 lpn = lba / SECTORS_PER_PAGE; u32 offset = lba % SECTORS_PER_PAGE;
+    u32 tmpnsect = nsect; u32 wb_cursor = 0;
+    while(1) {
+        if(tmpnsect == 0) break;
+        int buffer_hit = 0;
+        for(int i = 0; i < N_BUFFERS; i++) {
+            if(buffer[i].lpn != lpn) continue;
+            buffer_hit = 1;
+            if(tmpnsect + offset > SECTORS_PER_PAGE) {
+                for(int j = offset; j < SECTORS_PER_PAGE; j++) {
+                    buffer[i].data[j] = write_buffer[wb_cursor++];
+                    buffer_sector_bitmap[i][j] = 1;
+                }
+                lpn++;
+                tmpnsect -= SECTORS_PER_PAGE - offset;
+                offset = 0;
+                break;
+            }
+            else {
+                for(int j = offset; j < offset+tmpnsect; j++) {
+                    buffer[i].data[j] = write_buffer[wb_cursor++];
+                    buffer_sector_bitmap[i][j] = 1;
+                }
+                tmpnsect = 0;
+                break;
+            }
+        }
+        if(buffer_hit) continue;
+        if(buffer_empty_page == 0) ftl_flush();
+        for(int i = 0; i < N_BUFFERS; i++) {
+            if(buffer[i].lpn != -1) continue;
+            buffer_empty_page--;
+            buffer[i].lpn = lpn;
+            if(tmpnsect + offset > SECTORS_PER_PAGE) {
+                for(int j = offset; j < SECTORS_PER_PAGE; j++) {
+                    buffer[i].data[j] = write_buffer[wb_cursor++];
+                    buffer_sector_bitmap[i][j] = 1;
+                }
+                lpn++;
+                tmpnsect -= SECTORS_PER_PAGE - offset;
+                offset = 0;
+            }
+            else {
+                for(int j = offset; j < offset+tmpnsect; j++) {
+                    buffer[i].data[j] = write_buffer[wb_cursor++];
+                    buffer_sector_bitmap[i][j] = 1;
+                }
+                tmpnsect = 0;
+            }
+            break;
+        }
+
+    }
+
+}
+
+void ftl_flush()
+{
+    for(int i = 0; i < N_BUFFERS; i++)
+    {
+        //printf("ftl_flush : lpn %d\n", buffer[i].lpn);
+        int buffer_full = 1;
+        for(int j = 0; j < SECTORS_PER_PAGE; j++)
+        {
+            if(buffer_sector_bitmap[i][j] == 0) {
+                buffer_full = 0;
+                break;
+            }
+        }
+
+        if(buffer_full) ftl_write_direct(buffer[i].lpn * SECTORS_PER_PAGE, SECTORS_PER_PAGE, buffer[i].data);
+        else {
+            u32* read_buffer = (u32*)malloc(sizeof(u32)*SECTORS_PER_PAGE); u32 spare;
+            u32 bank = buffer[i].lpn % N_BANKS;
+            u32 map_page_offset = (buffer[i].lpn / N_BANKS) % SECTORS_PER_PAGE; 
+            u32 cash_slot = lpn2ppn(buffer[i].lpn);
+            u32 read_ppn = CMT[bank][cash_slot].data[map_page_offset];
+            if(read_ppn == -1) {
+                for(int j = 0; j < SECTORS_PER_PAGE; j++) {
+                    read_buffer[j] = 0xFFFFFFFF;
+                }
+            }
+            else nand_read(bank, read_ppn / PAGES_PER_BLK, read_ppn % PAGES_PER_BLK, read_buffer, &spare);
+            
+            for(int j = 0; j < SECTORS_PER_PAGE; j++) {
+                if(buffer_sector_bitmap[i][j] == 1) read_buffer[j] = buffer[i].data[j];
+            }
+            ftl_write_direct(buffer[i].lpn * SECTORS_PER_PAGE, SECTORS_PER_PAGE, read_buffer);
+        }
+
+        buffer[i].lpn = -1;
+        for(int j = 0; j < SECTORS_PER_PAGE; j++) {
+            buffer_sector_bitmap[i][j] = 0;
+        }
+    }
+    buffer_empty_page = N_BUFFERS;
 }
