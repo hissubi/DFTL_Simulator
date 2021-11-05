@@ -1,1 +1,1 @@
-# This is project from Embedded System Design, SKKU
+This is project from Embedded System Design, SKKU
