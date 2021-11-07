@@ -1,8 +1,8 @@
 /*
- * Lab #2 : FTL Simulator
+ * Project #1 : DFTL Simulator
  *  - Embedded Systems Design, ICE3028 (Fall, 2021)
  *
- * Sep. 23, 2021.
+ * Nov. 06, 2021.
  *
  * TA: Youngjae Lee, Jeeyoon Jung
  * Prof: Dongkun Shin
@@ -82,6 +82,7 @@ int main(int argc, char **argv)
 	while (1) {
 		int i;
 		char op;
+        char freq;
 		u32 lba;
 		u32 nsect;
 		u32 *buf;
@@ -100,12 +101,12 @@ int main(int argc, char **argv)
                         free(buf);
 			break;
 		case 'W':
-			scanf("%d %d", &lba, &nsect);
+			scanf("%d %d %c", &lba, &nsect, &freq);
                         assert(lba >= 0 && lba + nsect <= N_LPNS * SECTORS_PER_PAGE);
 			buf = malloc(SECTOR_SIZE * nsect);
 			for (i = 0; i < nsect; i++)
 				buf[i] = get_data();
-			ftl_write(lba, nsect, buf);
+			ftl_write(lba, nsect, freq, buf);
 			printf("Write(%u,%u): [ ", lba, nsect);
 			for (i = 0; i < nsect; i++)
 				printf("%2x ", buf[i]);
