@@ -157,8 +157,7 @@ static void map_garbage_collection(u32 bank, int workload_type)
                 max_invalid = n_page_invalid[bank][i];
                 victim_blk = i;
             }
-        }
-        
+        } 
         u32* data = (u32*)malloc(sizeof(u32)*SECTORS_PER_PAGE); u32 spare;
         for(int i = 0; i < PAGES_PER_BLK; i++)
         {
@@ -203,7 +202,7 @@ static void map_write(u32 bank, u32 map_page, u32 cache_slot)
     {
         block_state[bank][nextPBN] = FREE;
         n_trans_block[bank]--;
-        map_garbage_collection(bank, workload_type);
+        map_garbage_collection(bank, workload_type+2);
         nextPBN = next_page[bank][workload_type].PBN; nextPPN = next_page[bank][workload_type].PPN;
 
     }
