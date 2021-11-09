@@ -3,5 +3,6 @@
 
 - Student : Jungsub Yoon
 - TA : Youngjae Lee, Jeeyoon Jung
-- Prof: Dongkun Shin   
-Embedded Software Laboratory in SKKU
+- Prof: Dongkun Shin
+
+- Embedded Software Laboratory in SKKU
