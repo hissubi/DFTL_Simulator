@@ -19,8 +19,8 @@
 typedef unsigned int 		u32;
 
 #define SECTOR_SIZE					sizeof(u32)
-#define N_BANKS						8
-#define BLKS_PER_BANK				40
+#define N_BANKS						2
+#define BLKS_PER_BANK				32
 #define PAGES_PER_BLK				32
 #define SECTORS_PER_PAGE			(PAGE_DATA_SIZE / sizeof(u32))
 
@@ -81,5 +81,6 @@ struct ftl_stats {
 extern struct ftl_stats stats;
 
 void ftl_open();
-void ftl_write(u32 lba, u32 num_sectors, u32 *write_buffer);
+void ftl_write(u32 lba, u32 num_sectors, char workload_type, u32 *write_buffer);
 void ftl_read(u32 lba, u32 num_sectors, u32 *read_buffer);
+void ftl_flush();

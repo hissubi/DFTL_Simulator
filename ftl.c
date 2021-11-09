@@ -23,19 +23,27 @@ typedef struct _cmt_data{
     int map_page;
     u32 data[N_MAP_ENTRIES_PER_PAGE];
     int dirty;
+    int state;
 } cmt_data;
 typedef struct _buff_data{
-    int lpn;
+    int lpn; char state;
     u32 data[SECTORS_PER_PAGE];
 } buff_data;
 
+enum block_state_{
+    FREE = 0,
+    DATA_HOT = 1,
+    DATA_COLD = 2,
+    TRANS_HOT = 3,
+    TRANS_COLD = 4
+};
 
 int n_page_invalid[N_BANKS][BLKS_PER_BANK];
-p_data next_page[N_BANKS][3];
+p_data next_page[N_BANKS][5];
 
 int n_data_block[N_BANKS];
 int n_trans_block[N_BANKS];
-int block_state[N_BANKS][BLKS_PER_BANK]; // 0 : free, 1 : data, 2 : translation
+int block_state[N_BANKS][BLKS_PER_BANK]; 
 
 cmt_data CMT[N_BANKS][N_CACHED_MAP_PAGE_PB];
 p_data GTD[N_BANKS][N_MAP_PAGES_PB];
@@ -45,13 +53,13 @@ buff_data buffer[N_BUFFERS];
 int buffer_sector_bitmap[N_BUFFERS][SECTORS_PER_PAGE];
 int buffer_empty_page = N_BUFFERS;
 // you must increase stats.cache_hit when L2P is in CMT 
-void get_next_page(u32 bank, u32* nextPBN, u32* nextPPN, int status) //status -  1 : data, 2: trans
+void get_next_page(u32 bank, u32* nextPBN, u32* nextPPN, int status) 
 {
     if(next_page[bank][status].PBN == -1 || next_page[bank][status].PPN + 1 >= PAGES_PER_BLK)
     {
         for(int i = 0; i < BLKS_PER_BANK; i++)
         {
-            if(block_state[bank][i] == 0)
+            if(block_state[bank][i] == FREE)
             {
                 next_page[bank][status].PBN = i;
                 next_page[bank][status].PPN = 0;
@@ -87,18 +95,19 @@ void update_cache_count(u32 bank, int cache_slot)
     }
 }
 
-static void map_garbage_collection(u32 bank)
+static void map_garbage_collection(u32 bank, int workload_type)
 {
     stats.map_gc_cnt++;
     
     int max_invalid = 0;
     int victim_blk = -1;
+    int victim_blk_state = -1;
     int free_blk = -1;
     int free_page_write = 0;
 
     for(int i = 0; i < BLKS_PER_BANK; i++)
     {
-        if(block_state[bank][i] == 0) 
+        if(block_state[bank][i] == FREE) 
         {
             free_blk = i;
             break;
@@ -107,15 +116,15 @@ static void map_garbage_collection(u32 bank)
     
     for(int i = 0; i < BLKS_PER_BANK; i++)
     {
-        if(block_state[bank][i] != 2) continue;
+        if(block_state[bank][i] != TRANS_HOT && block_state[bank][i] != TRANS_COLD) continue;
         if(n_page_invalid[bank][i] > max_invalid)
         {
             max_invalid = n_page_invalid[bank][i];
             victim_blk = i;
+            victim_blk_state = block_state[bank][i];
         }
     }
-    block_state[bank][free_blk] = 2;
-
+        
     u32* data = (u32*)malloc(sizeof(u32)*SECTORS_PER_PAGE); u32 spare;
     for(int i = 0; i < PAGES_PER_BLK; i++)
     {
@@ -129,11 +138,47 @@ static void map_garbage_collection(u32 bank)
         }
     }
     free(data);
-    block_state[bank][victim_blk] = 0;
+    block_state[bank][free_blk] = victim_blk_state;
+    block_state[bank][victim_blk] = FREE;
     n_page_invalid[bank][victim_blk] = 0;
     nand_erase(bank, victim_blk);
 
-    next_page[bank][2].PBN = free_blk; next_page[bank][2].PPN = free_page_write;
+    next_page[bank][victim_blk_state].PBN = free_blk; next_page[bank][victim_blk_state].PPN = free_page_write;
+
+    if(victim_blk_state != workload_type)
+    {
+        free_blk = victim_blk;
+        max_invalid = 0; victim_blk = -1; 
+        for(int i = 0; i < BLKS_PER_BANK; i++)
+        {
+            if(block_state[bank][i] != workload_type) continue;
+            if(n_page_invalid[bank][i] > max_invalid)
+            {
+                max_invalid = n_page_invalid[bank][i];
+                victim_blk = i;
+            }
+        }
+        
+        u32* data = (u32*)malloc(sizeof(u32)*SECTORS_PER_PAGE); u32 spare;
+        for(int i = 0; i < PAGES_PER_BLK; i++)
+        {
+            nand_read(bank, victim_blk, i, data, &spare);
+            if(GTD[bank][spare].PBN != victim_blk || GTD[bank][spare].PPN != i) continue;
+            else
+            {
+                nand_write(bank, free_blk, free_page_write, data, &spare);
+                stats.map_gc_write++;
+                GTD[bank][spare].PBN = free_blk; GTD[bank][spare].PPN = free_page_write++;
+            }
+        }
+        free(data);
+        block_state[bank][free_blk] = workload_type;
+        block_state[bank][victim_blk] = FREE;
+        n_page_invalid[bank][victim_blk] = 0;
+        nand_erase(bank, victim_blk);
+
+        next_page[bank][workload_type].PBN = free_blk; next_page[bank][workload_type].PPN = free_page_write;
+    }
 }
 static void map_write(u32 bank, u32 map_page, u32 cache_slot)
 {
@@ -142,25 +187,24 @@ static void map_write(u32 bank, u32 map_page, u32 cache_slot)
         printf("ERROR : map_write call with clean cache_slot %d\n", cache_slot);
         return;
     }
-    CMT[bank][cache_slot].dirty = 0;
     map_page = CMT[bank][cache_slot].map_page;
-    CMT[bank][cache_slot].map_page = -1;
+    int workload_type = CMT[bank][cache_slot].state;
     
     u32 nextPBN = -1; u32 nextPPN = -1;
-    get_next_page(bank, &nextPBN, &nextPPN, 2);
+    get_next_page(bank, &nextPBN, &nextPPN, workload_type);
 
-    if(block_state[bank][nextPBN] == 0)
+    if(block_state[bank][nextPBN] == FREE)
     {
-        block_state[bank][nextPBN] = 2;
+        block_state[bank][nextPBN] = workload_type;
         n_trans_block[bank]++;
     }
     
     if(n_trans_block[bank] == N_PHY_MAP_BLK)
     {
-        block_state[bank][nextPBN] = 0;
+        block_state[bank][nextPBN] = FREE;
         n_trans_block[bank]--;
-        map_garbage_collection(bank);
-        nextPBN = next_page[bank][2].PBN; nextPPN = next_page[bank][2].PPN;
+        map_garbage_collection(bank, workload_type);
+        nextPBN = next_page[bank][workload_type].PBN; nextPPN = next_page[bank][workload_type].PPN;
 
     }
 
@@ -175,6 +219,9 @@ static void map_write(u32 bank, u32 map_page, u32 cache_slot)
     nand_write(bank, nextPBN, nextPPN, CMT[bank][cache_slot].data, &map_page);
     stats.map_write++;
 
+    CMT[bank][cache_slot].dirty = 0;
+    CMT[bank][cache_slot].map_page = -1;
+    CMT[bank][cache_slot].state = 0;
     for(int i = 0; i < SECTORS_PER_PAGE; i++)
     {
         CMT[bank][cache_slot].data[i] = 0xFFFFFFFF;
@@ -191,10 +238,15 @@ static void map_read(u32 bank, u32 map_page, u32 cache_slot)
     
     if(GTD[bank][map_page].PBN == -1)
     {
+        CMT[bank][cache_slot].state = 0;
         for(int i = 0; i < SECTORS_PER_PAGE; i++)
             read_data[i] = 0xFFFFFFFF;
     }
-    else nand_read(bank, GTD[bank][map_page].PBN, GTD[bank][map_page].PPN, read_data, &spare);
+    else 
+    {
+        nand_read(bank, GTD[bank][map_page].PBN, GTD[bank][map_page].PPN, read_data, &spare);
+        CMT[bank][cache_slot].state = block_state[bank][GTD[bank][map_page].PBN];
+    }
     CMT[bank][cache_slot].map_page = map_page;
     CMT[bank][cache_slot].dirty = 0;
     
@@ -238,16 +290,17 @@ u32 lpn2ppn(int lpn)
     return -1;
 }
 
-static void garbage_collection(u32 bank)
+static void garbage_collection(u32 bank, int workload_type)
 {
     int max_invalid = 0;
     int victim_blk = -1;
+    int victim_blk_state = -1;
     int free_blk = -1;
     int free_page_write = 0;
     
     for(int i = 0; i < BLKS_PER_BANK; i++)
     {
-        if(block_state[bank][i] == 0) 
+        if(block_state[bank][i] == FREE) 
         {
             free_blk = i;
             break;
@@ -256,14 +309,15 @@ static void garbage_collection(u32 bank)
     
     for(int i = 0; i < BLKS_PER_BANK; i++)
     {
-        if(block_state[bank][i] != 1) continue;
+        if(block_state[bank][i] != DATA_HOT && block_state[bank][i] != DATA_COLD) continue;
         if(n_page_invalid[bank][i] > max_invalid)
         {
             max_invalid = n_page_invalid[bank][i];
             victim_blk = i;
+            victim_blk_state = block_state[bank][i];
         }
     }
-    block_state[bank][free_blk] = 1;
+    block_state[bank][free_blk] = victim_blk_state;
 
     u32* data = malloc(sizeof(u32)*SECTORS_PER_PAGE); u32 spare;
     for(int i = 0; i < PAGES_PER_BLK; i++)
@@ -281,15 +335,58 @@ static void garbage_collection(u32 bank)
             CMT[bank][cash_slot].data[offset] = free_blk * PAGES_PER_BLK + free_page_write++;
             CMT[bank][cash_slot].map_page = spare / (N_BANKS * SECTORS_PER_PAGE);
             CMT[bank][cash_slot].dirty = 1;
+            CMT[bank][cash_slot].state = victim_blk_state;
         }
     }
     free(data); 
-    block_state[bank][victim_blk] = 0;
+    block_state[bank][victim_blk] = FREE;
     n_page_invalid[bank][victim_blk] = 0;
     nand_erase(bank, victim_blk);
    
-    next_page[bank][1].PBN = free_blk; next_page[bank][1].PPN = free_page_write;
+    next_page[bank][victim_blk_state].PBN = free_blk; next_page[bank][victim_blk_state].PPN = free_page_write;
     
+    if(victim_blk_state != workload_type)
+    {
+        free_blk = victim_blk; 
+        max_invalid = 0; victim_blk = -1;
+        for(int i = 0; i < BLKS_PER_BANK; i++)
+        {
+            if(block_state[bank][i] != workload_type) continue;
+            if(n_page_invalid[bank][i] > max_invalid)
+            {
+                max_invalid = n_page_invalid[bank][i];
+                victim_blk = i;
+            }
+        }
+        block_state[bank][free_blk] = workload_type;
+
+        u32* data = malloc(sizeof(u32)*SECTORS_PER_PAGE); u32 spare;
+        for(int i = 0; i < PAGES_PER_BLK; i++)
+        {
+            nand_read(bank, victim_blk, i, data, &spare); 
+            int offset = (spare / N_BANKS) % SECTORS_PER_PAGE; 
+            u32 cash_slot = lpn2ppn(spare);
+            if(CMT[bank][cash_slot].data[offset] != victim_blk * PAGES_PER_BLK + i) continue;
+            else
+            {
+                nand_write(bank, free_blk, free_page_write, data, &spare);
+                stats.gc_write++;
+
+                offset = (spare / N_BANKS) % SECTORS_PER_PAGE; 
+                CMT[bank][cash_slot].data[offset] = free_blk * PAGES_PER_BLK + free_page_write++;
+                CMT[bank][cash_slot].map_page = spare / (N_BANKS * SECTORS_PER_PAGE);
+                CMT[bank][cash_slot].dirty = 1;
+                CMT[bank][cash_slot].state = workload_type;
+            }
+        }
+        free(data); 
+        block_state[bank][victim_blk] = FREE;
+        n_page_invalid[bank][victim_blk] = 0;
+        nand_erase(bank, victim_blk);
+   
+        next_page[bank][workload_type].PBN = free_blk; next_page[bank][workload_type].PPN = free_page_write;
+    }
+
     stats.gc_cnt++;
 /***************************************
 Add
@@ -311,8 +408,12 @@ void ftl_open()
     {
         next_page[i][1].PBN = -1; next_page[i][1].PPN = -1;
         next_page[i][2].PBN = -1; next_page[i][2].PPN = -1;
+        next_page[i][3].PBN = -1; next_page[i][3].PPN = -1;
+        next_page[i][4].PBN = -1; next_page[i][4].PPN = -1;
+
         for(int j = 0; j<N_CACHED_MAP_PAGE_PB; j++)
         {
+            CMT[i][j].state = 0;
             CMT[i][j].dirty = 0;
             CMT[i][j].map_page = -1;
             for(int k = 0; k < N_MAP_ENTRIES_PER_PAGE; k++)    
@@ -330,6 +431,7 @@ void ftl_open()
     for(int i = 0; i < N_BUFFERS; i++)
     {
         buffer[i].lpn = -1;
+        buffer[i].state = 0;
     }
 }
 
@@ -358,9 +460,9 @@ int buffer_read(u32 lpn, u32 offset, u32 nsect, u32* read_buffer, int* sector_bi
             break;
         }
     }
-
     return flag1*flag2;
 }
+
 void ftl_read(u32 lba, u32 nsect, u32 *read_buffer)
 {
     u32 lpn = lba/SECTORS_PER_PAGE, offset = lba%SECTORS_PER_PAGE;
@@ -425,12 +527,13 @@ void ftl_read(u32 lba, u32 nsect, u32 *read_buffer)
     free(data); free(buffer_data); free(sector_bitmap);
 }
 
-void ftl_write_direct(u32 lba, u32 nsect, u32 *write_buffer)
+void ftl_write_direct(u32 lba, u32 nsect, char workload_type, u32 *write_buffer)
 {
     u32 lpn = lba/SECTORS_PER_PAGE, offset = lba%SECTORS_PER_PAGE;
     u32* data  = (u32*)malloc(sizeof(u32)*SECTORS_PER_PAGE); u32 spare;
     u32 tmpnsect = nsect;
     u32 wb_cursor = 0;
+    int input_state = (workload_type == 'H')? DATA_HOT : DATA_COLD;
 
     while(1)
     {
@@ -442,19 +545,19 @@ void ftl_write_direct(u32 lba, u32 nsect, u32 *write_buffer)
         }
         
         u32 nextPBN = -1; u32 nextPPN = -1;
-        get_next_page(bank, &nextPBN, &nextPPN, 1);
+        get_next_page(bank, &nextPBN, &nextPPN, input_state);
         
-        if(block_state[bank][nextPBN] == 0)
+        if(block_state[bank][nextPBN] == FREE)
         {
-            block_state[bank][nextPBN] = 1;
+            block_state[bank][nextPBN] = input_state;
             n_data_block[bank]++;
         }
         if(n_data_block[bank] == N_PHY_DATA_BLK) 
         {
-            block_state[bank][nextPBN] = 0;
+            block_state[bank][nextPBN] = FREE;
             n_data_block[bank]--;
-            garbage_collection(bank);
-            nextPBN = next_page[bank][1].PBN; nextPPN = next_page[bank][1].PPN;
+            garbage_collection(bank, input_state);
+            nextPBN = next_page[bank][input_state].PBN; nextPPN = next_page[bank][input_state].PPN;
         }
         
         u32 map_page = lpn/(N_BANKS * SECTORS_PER_PAGE);
@@ -465,6 +568,7 @@ void ftl_write_direct(u32 lba, u32 nsect, u32 *write_buffer)
         CMT[bank][cash_slot].data[map_page_offset] = nextPBN * PAGES_PER_BLK + nextPPN;
         CMT[bank][cash_slot].dirty = 1;
         CMT[bank][cash_slot].map_page = map_page;
+        CMT[bank][cash_slot].state = input_state + 2;
         
         if(read_ppn != -1)
         {
@@ -515,7 +619,7 @@ that you issue in this function
 }
 
 
-void ftl_write(u32 lba, u32 nsect, u32 *write_buffer)
+void ftl_write(u32 lba, u32 nsect, char workload_type, u32 *write_buffer)
 {
     u32 lpn = lba / SECTORS_PER_PAGE; u32 offset = lba % SECTORS_PER_PAGE;
     u32 tmpnsect = nsect; u32 wb_cursor = 0;
@@ -525,6 +629,7 @@ void ftl_write(u32 lba, u32 nsect, u32 *write_buffer)
         for(int i = 0; i < N_BUFFERS; i++) {
             if(buffer[i].lpn != lpn) continue;
             buffer_hit = 1;
+            buffer[i].state = workload_type;
             if(tmpnsect + offset > SECTORS_PER_PAGE) {
                 for(int j = offset; j < SECTORS_PER_PAGE; j++) {
                     buffer[i].data[j] = write_buffer[wb_cursor++];
@@ -550,6 +655,7 @@ void ftl_write(u32 lba, u32 nsect, u32 *write_buffer)
             if(buffer[i].lpn != -1) continue;
             buffer_empty_page--;
             buffer[i].lpn = lpn;
+            buffer[i].state = workload_type;
             if(tmpnsect + offset > SECTORS_PER_PAGE) {
                 for(int j = offset; j < SECTORS_PER_PAGE; j++) {
                     buffer[i].data[j] = write_buffer[wb_cursor++];
@@ -587,7 +693,7 @@ void ftl_flush()
             }
         }
 
-        if(buffer_full) ftl_write_direct(buffer[i].lpn * SECTORS_PER_PAGE, SECTORS_PER_PAGE, buffer[i].data);
+        if(buffer_full) ftl_write_direct(buffer[i].lpn * SECTORS_PER_PAGE, SECTORS_PER_PAGE, buffer[i].state, buffer[i].data);
         else {
             u32* read_buffer = (u32*)malloc(sizeof(u32)*SECTORS_PER_PAGE); u32 spare;
             u32 bank = buffer[i].lpn % N_BANKS;
@@ -604,7 +710,7 @@ void ftl_flush()
             for(int j = 0; j < SECTORS_PER_PAGE; j++) {
                 if(buffer_sector_bitmap[i][j] == 1) read_buffer[j] = buffer[i].data[j];
             }
-            ftl_write_direct(buffer[i].lpn * SECTORS_PER_PAGE, SECTORS_PER_PAGE, read_buffer);
+            ftl_write_direct(buffer[i].lpn * SECTORS_PER_PAGE, SECTORS_PER_PAGE, buffer[i].state, read_buffer);
         }
 
         buffer[i].lpn = -1;
