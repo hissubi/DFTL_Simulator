@@ -83,6 +83,7 @@ void trans_defragmenter(u32 bank, int workload_type, int free_blk)
                     free_blk = next_free_blk; free_page_write = 0;
                     n_trans_block[bank]++;
                 }
+                //printf("trans_def: write location bank %d PBN %d PPN %d\n", bank, free_blk, free_page_write);
                 nand_write(bank, free_blk, free_page_write, data, &spare);
                 stats.map_gc_write++;
                 GTD[bank][spare].PBN = free_blk; GTD[bank][spare].PPN = free_page_write++;
@@ -193,6 +194,7 @@ static void map_garbage_collection(u32 bank, int workload_type)
         if(GTD[bank][spare].PBN != victim_blk || GTD[bank][spare].PPN != i) continue;
         else
         {
+            //printf("map_gc: write location bank %d PBN %d PPN %d\n", bank, free_blk, free_page_write);
             nand_write(bank, free_blk, free_page_write, data, &spare);
             stats.map_gc_write++;
             GTD[bank][spare].PBN = free_blk; GTD[bank][spare].PPN = free_page_write++;
@@ -235,6 +237,14 @@ static void map_write(u32 bank, u32 map_page, u32 cache_slot)
     GTD[bank][map_page].PBN = nextPBN; GTD[bank][map_page].PPN = nextPPN;
 
 
+    //printf("map_write: write info bank %d slot %d\n", bank, cache_slot);
+    //printf("map_write: write location bank %d PBN %d PPN %d\n", bank, nextPBN, nextPPN);
+    /*printf("map_write: write data: ");
+    for(int i = 0; i < SECTORS_PER_PAGE; i++)
+    {
+        printf("%d ", CMT[bank][cache_slot].data[i]);
+    }
+    printf("\n");*/
     int x = nand_write(bank, nextPBN, nextPPN, CMT[bank][cache_slot].data, &map_page);
     stats.map_write++;
     //printf("map_write: write bank %d PBN %d PPN %d map_page %d errorcode %d\n", bank, nextPBN, nextPPN, map_page, x);
@@ -266,12 +276,15 @@ static void map_read(u32 bank, u32 map_page, u32 cache_slot)
     }
     CMT[bank][cache_slot].map_page = map_page;
     CMT[bank][cache_slot].dirty = 0;
-    
+   
+    //printf("map_read: read location: bank %d PBN %d PPN %d\n", bank, GTD[bank][map_page].PBN, GTD[bank][map_page].PPN);
+    //printf("map_read: read_data: ");
     for(int i = 0; i< SECTORS_PER_PAGE; i++)
     {
         CMT[bank][cache_slot].data[i] = read_data[i];
+  //      printf("%d ", read_data[i]);
     }
-    
+//    printf("\n");
     free(read_data);
     return;
 }
@@ -313,6 +326,8 @@ void data_defragmenter(u32 bank, int workload_type, int free_blk)
     int erased_npage = 0; int free_page_write = 0; 
     int next_free_blk = -1;
     u32* data = (u32*)malloc(sizeof(u32)*SECTORS_PER_PAGE); u32 spare;
+    
+    block_state[bank][free_blk] = workload;
     for(int i = 0; i < BLKS_PER_BANK; i++)
     {
         if(i == free_blk) continue;
@@ -332,10 +347,11 @@ void data_defragmenter(u32 bank, int workload_type, int free_blk)
             {
                 if(free_page_write == PAGES_PER_BLK)
                 {
-                    block_state[bank][free_blk] = workload;
+                    block_state[bank][next_free_blk] = workload;
                     free_blk = next_free_blk; free_page_write = 0;
                     n_data_block[bank]++;
                 }
+                //printf("data_def: write location bank %d PBN %d PPN %d\n", bank, free_blk, free_page_write);
                 nand_write(bank, free_blk, free_page_write, data, &spare);
                 stats.gc_write++;
 
@@ -344,6 +360,7 @@ void data_defragmenter(u32 bank, int workload_type, int free_blk)
                 CMT[bank][cash_slot].map_page = spare / (N_BANKS * SECTORS_PER_PAGE);
                 CMT[bank][cash_slot].dirty = 1;
                 CMT[bank][cash_slot].state = workload_type;
+                //printf("data_def: CMT change bank %d slot %d offset %d data %d\n", bank, cash_slot, offset, CMT[bank][cash_slot].data[offset]);
             }
         }
 
@@ -353,7 +370,7 @@ void data_defragmenter(u32 bank, int workload_type, int free_blk)
         n_data_block[bank]--;
         next_free_blk = i;
     }
-    block_state[bank][free_blk] = workload;
+    //printf("data_def: bank %d PBN %d state %d\n", bank, free_blk, workload);
     n_data_block[bank]++;
     free(data);
     next_page[bank][workload].PBN = free_blk; next_page[bank][workload].PPN = free_page_write-1;
@@ -363,6 +380,7 @@ void data_defragmenter(u32 bank, int workload_type, int free_blk)
 static void garbage_collection(u32 bank, int workload_type)
 {
     //printf("GC call\n");
+    stats.gc_cnt++;
     int max_invalid = 0;
     int victim_blk = -1;
     int free_blk = -1;
@@ -405,6 +423,7 @@ static void garbage_collection(u32 bank, int workload_type)
         if(CMT[bank][cash_slot].data[offset] != victim_blk * PAGES_PER_BLK + i) continue;
         else
         {
+            //printf("gc: write location bank %d PBN %d PPN %d\n", bank, free_blk, free_page_write);
             nand_write(bank, free_blk, free_page_write, data, &spare);
             stats.gc_write++;
 
@@ -413,6 +432,7 @@ static void garbage_collection(u32 bank, int workload_type)
             CMT[bank][cash_slot].map_page = spare / (N_BANKS * SECTORS_PER_PAGE);
             CMT[bank][cash_slot].dirty = 1;
             CMT[bank][cash_slot].state = workload_type;
+            //printf("gc: CMT change bank %d slot %d offset %d data %d\n", bank, cash_slot, offset, CMT[bank][cash_slot].data[offset]);
         }
     }
     free(data); 
@@ -423,7 +443,6 @@ static void garbage_collection(u32 bank, int workload_type)
    
     next_page[bank][workload_type].PBN = free_blk; next_page[bank][workload_type].PPN = free_page_write-1;
     
-    stats.gc_cnt++;
 /***************************************
 Add
 
@@ -599,6 +618,7 @@ void ftl_write_direct(u32 lba, u32 nsect, char workload_type, u32 *write_buffer)
         CMT[bank][cash_slot].dirty = 1;
         CMT[bank][cash_slot].map_page = map_page;
         CMT[bank][cash_slot].state = input_state;
+        //printf("ftl_write: CMT change bank %d slot %d offset %d data %d\n", bank, cash_slot, map_page_offset, CMT[bank][cash_slot].data[map_page_offset]);
        
         if(read_ppn != -1)
         {
@@ -614,6 +634,7 @@ void ftl_write_direct(u32 lba, u32 nsect, char workload_type, u32 *write_buffer)
                 if(i >= offset && i < SECTORS_PER_PAGE) data[i] = write_buffer[wb_cursor++];
             }
             spare = lpn;
+            //printf("ftl_write: write location bank %d PBN %d PPN %d\n", bank, nextPBN, nextPPN);
             nand_write(bank, nextPBN, nextPPN, data, &spare);
             stats.nand_write++;
             tmpnsect -= (SECTORS_PER_PAGE - offset);
@@ -627,6 +648,7 @@ void ftl_write_direct(u32 lba, u32 nsect, char workload_type, u32 *write_buffer)
                 if(i >= offset && i < offset + tmpnsect) data[i] = write_buffer[wb_cursor++];
             }
             spare = lpn;
+            //printf("ftl_write: write location bank %d PBN %d PPN %d\n", bank, nextPBN, nextPPN);
             nand_write(bank, nextPBN, nextPPN, data, &spare);
             stats.nand_write++;
             break;
