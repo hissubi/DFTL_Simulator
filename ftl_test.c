@@ -50,12 +50,14 @@ static void show_stat(void)
 	printf("MAP writes : %ld\n", stats.map_write);
 	printf("Number of MAP GCs : %d\n", stats.map_gc_cnt);
 	printf("Number of MAP GC write : %ld\n", stats.map_gc_write);
-
-	printf("Valid pages per GC: %.2f pages\n", (double)stats.gc_write / stats.gc_cnt);
+	printf("Number of fragmenters : %ld\n", stats.fragmenter_cnt);
+	printf("Number of fragmenters write : %ld\n", stats.fragmenter_write);
+	
+    printf("Valid pages per GC: %.2f pages\n", (double)stats.gc_write / stats.gc_cnt);
 	printf("Valid pages per Map GC: %.2f pages\n", (double)stats.map_gc_write / stats.map_gc_cnt);
 
 	printf("Cache hit rate : %.2f %%\n", (double)(stats.cache_hit*100. / (stats.cache_hit + stats.cache_miss)));
-	printf("WAF: %.2f\n", (double)((stats.nand_write + stats.gc_write+stats.map_write + stats.map_gc_write) * 8.0 / stats.host_write));
+	printf("WAF: %.2f\n", (double)((stats.nand_write + stats.gc_write+stats.map_write + stats.map_gc_write + stats.fragmenter_write) * 8.0 / stats.host_write));
 }
 
 int main(int argc, char **argv)

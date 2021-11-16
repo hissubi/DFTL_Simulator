@@ -76,6 +76,8 @@ struct ftl_stats {
 	long map_gc_write;
 	long cache_hit;
 	long cache_miss;
+    long fragmenter_cnt;
+    long fragmenter_write;
 };
 
 extern struct ftl_stats stats;

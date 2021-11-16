@@ -57,6 +57,7 @@ int buffer_empty_page = N_BUFFERS;
 void trans_defragmenter(u32 bank, int workload_type, int free_blk)
 {
     //printf("trans_defragmenter call : bank %d workload_type %d\n", bank, workload_type);
+    stats.fragmenter_cnt++;
     int workload = (workload_type == 3)? 4:3;
     int erased_npage = 0; int free_page_write = 0;
     int next_free_blk = -1;
@@ -85,7 +86,7 @@ void trans_defragmenter(u32 bank, int workload_type, int free_blk)
                 }
                 //printf("trans_def: write location bank %d PBN %d PPN %d\n", bank, free_blk, free_page_write);
                 nand_write(bank, free_blk, free_page_write, data, &spare);
-                stats.map_gc_write++;
+                stats.fragmenter_write++;
                 GTD[bank][spare].PBN = free_blk; GTD[bank][spare].PPN = free_page_write++;
             }
         }
@@ -322,6 +323,7 @@ u32 lpn2ppn(int lpn)
 void data_defragmenter(u32 bank, int workload_type, int free_blk)
 {
     //printf("data_deragementer call\n");
+    stats.fragmenter_cnt++;
     int workload = (workload_type == 1)? 2:1;
     int erased_npage = 0; int free_page_write = 0; 
     int next_free_blk = -1;
@@ -353,7 +355,7 @@ void data_defragmenter(u32 bank, int workload_type, int free_blk)
                 }
                 //printf("data_def: write location bank %d PBN %d PPN %d\n", bank, free_blk, free_page_write);
                 nand_write(bank, free_blk, free_page_write, data, &spare);
-                stats.gc_write++;
+                stats.fragmenter_write++;
 
                 offset = (spare / N_BANKS) % SECTORS_PER_PAGE; 
                 CMT[bank][cash_slot].data[offset] = free_blk * PAGES_PER_BLK + free_page_write++;
