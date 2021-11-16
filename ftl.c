@@ -667,13 +667,13 @@ for every nand_write call (every valid page copy)
 that you issue in this function
 ***************************************/
     free(data);
-	stats.host_write += nsect;
 	return;
 }
 
 
 void ftl_write(u32 lba, u32 nsect, char workload_type, u32 *write_buffer)
 {
+	stats.host_write += nsect;
     u32 lpn = lba / SECTORS_PER_PAGE; u32 offset = lba % SECTORS_PER_PAGE;
     u32 tmpnsect = nsect; u32 wb_cursor = 0;
     while(1) {
